@@ -1,0 +1,159 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+from skimage.metrics import peak_signal_noise_ratio as psnr
+from skimage.metrics import structural_similarity as ssim
+
+def apply_clahe(image):
+    """CLAHE"""
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    l = clahe.apply(l)
+    enhanced = cv2.merge([l, a, b])
+    return cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
+
+def apply_gamma_correction(image, gamma=1.5):
+    """Gamma Correction"""
+    inv_gamma = 1.0 / gamma
+    table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)]).astype("uint8")
+    return cv2.LUT(image, table)
+
+def apply_auto_contrast(image):
+    """Auto Contrast Adjustment"""
+    result = np.zeros_like(image)
+    for i in range(3):
+        channel = image[:, :, i]
+        min_val, max_val = np.percentile(channel, [2, 98])
+        result[:, :, i] = np.clip((channel - min_val) * 255.0 / (max_val - min_val), 0, 255)
+    return result.astype(np.uint8)
+
+def apply_hsv_enhancement(image):
+    """HSV-based Enhancement"""
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV).astype(np.float32)
+    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * 1.3, 0, 255)  # Increase saturation
+    hsv[:, :, 2] = np.clip(hsv[:, :, 2] * 1.2, 0, 255)  # Increase brightness
+    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+def calculate_metrics(original, enhanced):
+    """PSNR and SSIM"""
+    original_gray = cv2.cvtColor(original, cv2.COLOR_BGR2GRAY)
+    enhanced_gray = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY)
+    
+    psnr_value = psnr(original_gray, enhanced_gray, data_range=255)
+    ssim_value = ssim(original_gray, enhanced_gray, data_range=255)
+    
+    return psnr_value, ssim_value
+
+def process_image(image_path, problem_type):
+    """Process image with all enhancement methods"""
+    # Read image
+    image = cv2.imread(image_path)
+    if image is None:
+        print(f"Error: Could not read image from {image_path}")
+        return None
+    
+    # enhancement methods
+    clahe_result = apply_clahe(image)
+    gamma_result = apply_gamma_correction(image, gamma=1.5)
+    contrast_result = apply_auto_contrast(image)
+    hsv_result = apply_hsv_enhancement(image)
+    
+    # Calculate metrics
+    methods = {
+        'CLAHE': clahe_result,
+        'Gamma Correction': gamma_result,
+        'Auto Contrast': contrast_result,
+        'HSV Enhancement': hsv_result
+    }
+    
+    results = {}
+    for method_name, enhanced in methods.items():
+        psnr_val, ssim_val = calculate_metrics(image, enhanced)
+        results[method_name] = {
+            'image': enhanced,
+            'psnr': psnr_val,
+            'ssim': ssim_val
+        }
+    
+    # Find best method
+    best_method = max(results.items(), key=lambda x: x[1]['ssim'])
+    
+    # Display results
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    fig.suptitle(f'Color Enhancement Results - {problem_type}', fontsize=16, fontweight='bold')
+    
+    # Original image
+    axes[0, 0].imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    axes[0, 0].set_title('Original Image', fontweight='bold')
+    axes[0, 0].axis('off')
+    
+    # Enhanced images
+    positions = [(0, 1), (0, 2), (1, 0), (1, 1)]
+    for idx, (method_name, data) in enumerate(results.items()):
+        row, col = positions[idx]
+        axes[row, col].imshow(cv2.cvtColor(data['image'], cv2.COLOR_BGR2RGB))
+        title = f"{method_name}\nPSNR: {data['psnr']:.2f} | SSIM: {data['ssim']:.4f}"
+        if method_name == best_method[0]:
+            title += "\n★ BEST ★"
+            axes[row, col].set_title(title, fontweight='bold', color='green', fontsize=10)
+        else:
+            axes[row, col].set_title(title, fontsize=9)
+        axes[row, col].axis('off')
+    
+    # Summary
+    axes[1, 2].axis('off')
+    summary_text = f"Problem Type: {problem_type}\n\n"
+    summary_text += "Method Rankings (by SSIM):\n"
+    sorted_methods = sorted(results.items(), key=lambda x: x[1]['ssim'], reverse=True)
+    for rank, (method, data) in enumerate(sorted_methods, 1):
+        summary_text += f"{rank}. {method}\n   SSIM: {data['ssim']:.4f}\n"
+    
+    axes[1, 2].text(0.1, 0.5, summary_text, fontsize=10, verticalalignment='center',
+                    family='monospace', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
+    plt.tight_layout()
+    plt.show()
+    
+    return best_method
+
+def main():
+    """Main function to process multiple images"""
+    print("=" * 60)
+    print("Color Image Enhancement Program")
+    print("=" * 60)
+    
+    images = [
+        (r'C:\Users\Thinkpad\Pictures\image processing\dark_image.jpg', 'Dark Image'),
+        (r'C:\Users\Thinkpad\Pictures\image processing\contrast\images.jpg', 'Low Contrast Image')
+    ]
+    
+    print("\nProcessing images...")
+    print("-" * 60)
+    
+    overall_results = []
+    
+    for image_path, problem_type in images:
+        print(f"\nProcessing: {image_path} ({problem_type})")
+        result = process_image(image_path, problem_type)
+        
+        if result:
+            overall_results.append({
+                'image': image_path,
+                'problem': problem_type,
+                'best_method': result[0],
+                'ssim': result[1]['ssim']
+            })
+            print(f"  → Best method: {result[0]} (SSIM: {result[1]['ssim']:.4f})")
+    
+    # Final summary
+    print("\n" + "=" * 60)
+    print("FINAL SUMMARY")
+    print("=" * 60)
+    for res in overall_results:
+        print(f"{res['problem']:20s} → {res['best_method']:20s} (SSIM: {res['ssim']:.4f})")
+    print("=" * 60)
+
+if __name__ == "__main__":
+    main()
+
