@@ -1,0 +1,161 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+from skimage.metrics import peak_signal_noise_ratio as psnr
+from skimage.metrics import structural_similarity as ssim
+
+def add_gaussian_noise(image, mean=0, sigma=25):
+    """Add Gaussian noise"""
+    noise = np.random.normal(mean, sigma, image.shape)
+    noisy = np.clip(image + noise, 0, 255).astype(np.uint8)
+    return noisy
+
+def add_salt_pepper_noise(image, prob=0.05):
+    """Add salt and pepper noise"""
+    noisy = image.copy()
+    num_salt = np.ceil(prob * image.size * 0.5)
+    num_pepper = np.ceil(prob * image.size * 0.5)
+    
+    # Salt (white)
+    coords = [np.random.randint(0, i-1, int(num_salt)) for i in image.shape]
+    noisy[coords[0], coords[1]] = 255
+    
+    # Pepper (black)
+    coords = [np.random.randint(0, i-1, int(num_pepper)) for i in image.shape]
+    noisy[coords[0], coords[1]] = 0
+    
+    return noisy
+
+def add_uniform_noise(image, low=-30, high=30):
+    """Add uniform noise"""
+    noise = np.random.uniform(low, high, image.shape)
+    noisy = np.clip(image + noise, 0, 255).astype(np.uint8)
+    return noisy
+
+def apply_filters(noisy_image):
+    """Apply different filters"""
+    filters = {}
+    
+    # Average filter
+    filters['Average 3x3'] = cv2.blur(noisy_image, (3, 3))
+    filters['Average 5x5'] = cv2.blur(noisy_image, (5, 5))
+    
+    # Gaussian filter
+    filters['Gaussian 3x3'] = cv2.GaussianBlur(noisy_image, (3, 3), 1)
+    filters['Gaussian 5x5'] = cv2.GaussianBlur(noisy_image, (5, 5), 1.5)
+    
+    # Median filter
+    filters['Median 3x3'] = cv2.medianBlur(noisy_image, 3)
+    filters['Median 5x5'] = cv2.medianBlur(noisy_image, 5)
+    
+    # Bilateral filter
+    filters['Bilateral'] = cv2.bilateralFilter(noisy_image, 9, 75, 75)
+    
+    return filters
+
+def calculate_quality_metrics(original, filtered):
+    """PSNR and SSIM"""
+    psnr_value = psnr(original, filtered)
+    ssim_value = ssim(original, filtered)
+    return psnr_value, ssim_value
+
+def plot_noise_results(original, noisy_img, results, noise_type):
+    """Display results for one noise type"""
+    fig, axes = plt.subplots(3, 3, figsize=(15, 15))
+    fig.suptitle(f'Filter Comparison - Noise: {noise_type}', fontsize=16, fontweight='bold')
+    
+    # Original image
+    axes[0, 0].imshow(original, cmap='gray')
+    axes[0, 0].set_title('Original Image')
+    axes[0, 0].axis('off')
+    
+    # Noisy image
+    axes[0, 1].imshow(noisy_img, cmap='gray')
+    axes[0, 1].set_title(f'Noisy ({noise_type})')
+    axes[0, 1].axis('off')
+    
+    # Filters
+    filter_names = list(results.keys())
+    positions = [(0, 2), (1, 0), (1, 1), (1, 2), (2, 0), (2, 1), (2, 2)]
+    
+    for fname, pos in zip(filter_names, positions):
+        img = results[fname]['image']
+        psnr_val = results[fname]['psnr']
+        ssim_val = results[fname]['ssim']
+        
+        axes[pos].imshow(img, cmap='gray')
+        axes[pos].set_title(f'{fname}\nPSNR: {psnr_val:.2f} dB\nSSIM: {ssim_val:.4f}', fontsize=10)
+        axes[pos].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+
+def main():
+    # Load image
+    image_path = r'C:\Users\Thinkpad\Pictures\image.jpg' 
+    original = cv2.imread(image_path, 0)
+    
+    if original is None:
+        print("Error: Image not found!")
+        return
+    
+    
+    print("Exercise 2: Filter Comparison")
+    
+    # Add different noises
+    noises = {
+        'Gaussian': add_gaussian_noise(original, sigma=25),
+        'Salt & Pepper': add_salt_pepper_noise(original, prob=0.05),
+        'Uniform': add_uniform_noise(original, low=-30, high=30)
+    }
+    
+    # Process each noise
+    for noise_type, noisy_img in noises.items():
+        print(f"\n{'='*60}")
+        print(f"Noise: {noise_type}")
+        print('='*60)
+        
+        # Apply filters
+        filters = apply_filters(noisy_img)
+        
+        results = {}
+        best_psnr = 0
+        best_filter_psnr = ''
+        best_ssim = 0
+        best_filter_ssim = ''
+        
+        print(f"\n{'Filter':<20} {'PSNR (dB)':<15} {'SSIM':<10}")
+        print('-' * 50)
+        
+        for filter_name, filtered_img in filters.items():
+            psnr_val, ssim_val = calculate_quality_metrics(original, filtered_img)
+            results[filter_name] = {
+                'psnr': psnr_val,
+                'ssim': ssim_val,
+                'image': filtered_img
+            }
+            
+            print(f"{filter_name:<20} {psnr_val:<15.2f} {ssim_val:<10.4f}")
+            
+            if psnr_val > best_psnr:
+                best_psnr = psnr_val
+                best_filter_psnr = filter_name
+            
+            if ssim_val > best_ssim:
+                best_ssim = ssim_val
+                best_filter_ssim = filter_name
+        
+        print(f"\n Best filter based on PSNR: {best_filter_psnr} ({best_psnr:.2f} dB)")
+        print(f" Best filter based on SSIM: {best_filter_ssim} ({best_ssim:.4f})")
+        
+        # Display visually
+        plot_noise_results(original, noisy_img, results, noise_type)
+        
+        # Save best result
+        best_img = results[best_filter_psnr]['image']
+        cv2.imwrite(f'result_{noise_type.replace(" & ", "_")}_best.jpg', best_img)
+    
+    print("\n Results saved.")
+
+if __name__ == "__main__":
+    main()
