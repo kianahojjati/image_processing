@@ -1,0 +1,357 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import time
+
+def initialize_video(video_path):
+    video_capture = cv2.VideoCapture(video_path)
+
+    if not video_capture.isOpened():
+        raise ValueError("Video could not be opened. Check the video path.")
+
+    success, first_frame = video_capture.read()
+
+    if not success:
+        raise ValueError("The first frame could not be read.")
+
+    first_gray = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
+
+    return video_capture, first_frame, first_gray
+
+def detect_stable_features(gray_frame):
+    feature_points = cv2.goodFeaturesToTrack(
+        gray_frame,
+        maxCorners=300,
+        qualityLevel=0.001,
+        minDistance=5,
+        blockSize=3
+    )
+
+    if feature_points is None:
+        feature_points = cv2.goodFeaturesToTrack(
+            gray_frame,
+            maxCorners=500,
+            qualityLevel=0.0001,
+            minDistance=3,
+            blockSize=3
+        )
+
+    return feature_points
+
+def find_valid_start_frame(video_capture, first_frame, first_gray, max_skip_frames=30):
+    previous_points = detect_stable_features(first_gray)
+
+    if previous_points is not None:
+        return first_frame, first_gray, previous_points, 0
+
+    skip_count = 0
+
+    while previous_points is None and skip_count < max_skip_frames:
+        success, frame = video_capture.read()
+
+        if not success:
+            break
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        previous_points = detect_stable_features(gray)
+        skip_count += 1
+
+        if previous_points is not None:
+            return frame, gray, previous_points, skip_count
+
+    raise ValueError("No stable features were detected. Try another video with more corners or better lighting.")
+
+def calculate_optical_flow(previous_gray, current_gray, previous_points):
+    lk_parameters = dict(
+        winSize=(21, 21),
+        maxLevel=3,
+        criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)
+    )
+
+    next_points, status, error = cv2.calcOpticalFlowPyrLK(
+        previous_gray,
+        current_gray,
+        previous_points,
+        None,
+        **lk_parameters
+    )
+
+    return next_points, status, error
+
+def evaluate_tracking(previous_points, next_points, status, error):
+    if next_points is None or status is None:
+        return 0, 0.0, 0.0, 0.0
+
+    good_new = next_points[status == 1]
+    good_old = previous_points[status == 1]
+
+    tracked_count = len(good_new)
+    total_count = len(previous_points)
+
+    tracking_ratio = tracked_count / total_count if total_count > 0 else 0.0
+
+    if tracked_count > 0:
+        movement = np.linalg.norm(good_new - good_old, axis=1)
+        average_movement = float(np.mean(movement))
+        average_error = float(np.mean(error[status == 1]))
+    else:
+        average_movement = 0.0
+        average_error = 0.0
+
+    return tracked_count, tracking_ratio, average_movement, average_error
+
+def classify_condition(tracking_ratio, average_error):
+    if tracking_ratio > 0.75 and average_error < 20:
+        return "Stable"
+    elif tracking_ratio > 0.45:
+        return "Moderate"
+    else:
+        return "Difficult"
+
+def draw_tracking_result(frame, mask, good_new, good_old):
+    for new_point, old_point in zip(good_new, good_old):
+        x_new, y_new = new_point.ravel()
+        x_old, y_old = old_point.ravel()
+
+        mask = cv2.line(
+            mask,
+            (int(x_new), int(y_new)),
+            (int(x_old), int(y_old)),
+            (0, 255, 0),
+            2
+        )
+
+        frame = cv2.circle(
+            frame,
+            (int(x_new), int(y_new)),
+            4,
+            (0, 0, 255),
+            -1
+        )
+
+    output_frame = cv2.add(frame, mask)
+    return output_frame, mask
+
+def put_information_on_frame(output_frame, frame_index, tracked_count, tracking_ratio, condition):
+    cv2.putText(
+        output_frame,
+        f"Frame: {frame_index}",
+        (20, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (255, 255, 255),
+        2
+    )
+
+    cv2.putText(
+        output_frame,
+        f"Tracked Points: {tracked_count}",
+        (20, 60),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (255, 255, 255),
+        2
+    )
+
+    cv2.putText(
+        output_frame,
+        f"Tracking Ratio: {tracking_ratio:.2f}",
+        (20, 90),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (255, 255, 255),
+        2
+    )
+
+    cv2.putText(
+        output_frame,
+        f"Condition: {condition}",
+        (20, 120),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (0, 255, 255),
+        2
+    )
+
+    return output_frame
+
+def plot_tracking_report(report):
+    plt.figure(figsize=(15, 8))
+
+    plt.subplot(2, 2, 1)
+    plt.plot(report["Frame"], report["Tracked Points"])
+    plt.title("Tracked Points Over Time")
+    plt.xlabel("Frame")
+    plt.ylabel("Tracked Points")
+
+    plt.subplot(2, 2, 2)
+    plt.plot(report["Frame"], report["Tracking Ratio"])
+    plt.title("Tracking Ratio Over Time")
+    plt.xlabel("Frame")
+    plt.ylabel("Tracking Ratio")
+
+    plt.subplot(2, 2, 3)
+    plt.plot(report["Frame"], report["Average Movement"])
+    plt.title("Average Movement Over Time")
+    plt.xlabel("Frame")
+    plt.ylabel("Average Movement")
+
+    plt.subplot(2, 2, 4)
+    plt.plot(report["Frame"], report["Average Error"])
+    plt.title("Optical Flow Error Over Time")
+    plt.xlabel("Frame")
+    plt.ylabel("Average Error")
+
+    plt.tight_layout()
+    plt.show()
+
+def feature_based_object_tracking(video_path, output_path="tracking_output.avi", show_video=True):
+    video_capture, first_frame, previous_gray = initialize_video(video_path)
+
+    first_frame, previous_gray, previous_points, skipped_frames = find_valid_start_frame(
+        video_capture,
+        first_frame,
+        previous_gray,
+        max_skip_frames=30
+    )
+
+    print(f"Tracking started after skipping {skipped_frames} frame(s).")
+    print(f"Initial stable features: {len(previous_points)}")
+
+    mask = np.zeros_like(first_frame)
+
+    frame_width = int(video_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = video_capture.get(cv2.CAP_PROP_FPS)
+
+    if fps == 0:
+        fps = 25
+
+    video_writer = cv2.VideoWriter(
+        output_path,
+        cv2.VideoWriter_fourcc(*"XVID"),
+        fps,
+        (frame_width, frame_height)
+    )
+
+    tracking_records = []
+
+    frame_index = 1
+    start_time = time.time()
+
+    while True:
+        success, current_frame = video_capture.read()
+
+        if not success:
+            break
+
+        current_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
+
+        next_points, status, error = calculate_optical_flow(
+            previous_gray,
+            current_gray,
+            previous_points
+        )
+
+        tracked_count, tracking_ratio, average_movement, average_error = evaluate_tracking(
+            previous_points,
+            next_points,
+            status,
+            error
+        )
+
+        condition = classify_condition(tracking_ratio, average_error)
+
+        if next_points is not None and status is not None and tracked_count > 0:
+            good_new = next_points[status == 1]
+            good_old = previous_points[status == 1]
+
+            output_frame, mask = draw_tracking_result(
+                current_frame.copy(),
+                mask,
+                good_new,
+                good_old
+            )
+
+            previous_gray = current_gray.copy()
+            previous_points = good_new.reshape(-1, 1, 2)
+
+            if len(previous_points) < 40:
+                new_points = detect_stable_features(previous_gray)
+
+                if new_points is not None:
+                    previous_points = new_points
+                    mask = np.zeros_like(current_frame)
+        else:
+            output_frame = current_frame.copy()
+
+            new_points = detect_stable_features(current_gray)
+
+            if new_points is not None:
+                previous_gray = current_gray.copy()
+                previous_points = new_points
+                mask = np.zeros_like(current_frame)
+
+        output_frame = put_information_on_frame(
+            output_frame,
+            frame_index,
+            tracked_count,
+            tracking_ratio,
+            condition
+        )
+
+        video_writer.write(output_frame)
+
+        if show_video:
+            cv2.imshow("Feature Based Tracking", output_frame)
+
+            if cv2.waitKey(30) & 0xFF == ord("q"):
+                break
+
+        tracking_records.append({
+            "Frame": frame_index,
+            "Tracked Points": tracked_count,
+            "Tracking Ratio": tracking_ratio,
+            "Average Movement": average_movement,
+            "Average Error": average_error,
+            "Condition": condition
+        })
+
+        frame_index += 1
+
+    total_time = time.time() - start_time
+
+    video_capture.release()
+    video_writer.release()
+    cv2.destroyAllWindows()
+
+    report = pd.DataFrame(tracking_records)
+
+    print("\nFeature Based Tracking Report")
+    print("-----------------------------")
+    print(report.describe())
+
+    print("\nGeneral Results")
+    print("---------------")
+    print(f"Total processed frames: {len(report)}")
+    print(f"Average tracking ratio: {report['Tracking Ratio'].mean():.3f}")
+    print(f"Average tracked points: {report['Tracked Points'].mean():.2f}")
+    print(f"Average movement: {report['Average Movement'].mean():.2f}")
+    print(f"Average optical flow error: {report['Average Error'].mean():.2f}")
+    print(f"Processing time: {total_time:.2f} seconds")
+    print(f"Output video saved as: {output_path}")
+
+    print("\nCondition Summary")
+    print("-----------------")
+    print(report["Condition"].value_counts())
+
+    plot_tracking_report(report)
+
+    return report
+
+report = feature_based_object_tracking(
+    video_path=r"C:\Users\Thinkpad\Pictures\image processing -\chapter 5\ex3\building video.mp4",
+    output_path="tracking_output.avi",
+    show_video=True
+)
