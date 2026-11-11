@@ -1,0 +1,174 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
+from matplotlib.widgets import Button
+import cv2
+
+class FrequencySpectrumAnalyzer:
+    
+    def __init__(self, image_path):
+        
+        self.original_image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        if self.original_image is None:
+            raise ValueError(f"Cannot load image from {image_path}")
+        
+        self.f_transform = np.fft.fft2(self.original_image)
+        self.f_shift = np.fft.fftshift(self.f_transform)
+        self.magnitude_spectrum = np.log(np.abs(self.f_shift) + 1)
+        
+        self.filter_mask = np.ones_like(self.original_image, dtype=float)
+        
+        self.selected_regions = []
+        self.current_rect = None
+        self.rect_start = None
+        
+        self.setup_ui()
+    
+    def setup_ui(self):
+        
+        self.fig = plt.figure(figsize=(16, 10))
+        self.fig.suptitle('Frequency Spectrum Analyzer', fontsize=16, fontweight='bold', y=0.98)
+        
+        self.ax1 = plt.subplot(2, 3, 1)
+        self.ax1.set_title('Original Image')
+        self.ax1.imshow(self.original_image, cmap='gray')
+        self.ax1.axis('off')
+        
+        self.ax2 = plt.subplot(2, 3, 2)
+        self.ax2.set_title('Frequency Spectrum (Click & Drag to Select)')
+        self.spectrum_display = self.ax2.imshow(self.magnitude_spectrum, cmap='jet')
+        self.ax2.axis('on')
+        plt.colorbar(self.spectrum_display, ax=self.ax2, fraction=0.046)
+        
+        self.ax3 = plt.subplot(2, 3, 3)
+        self.ax3.set_title('Filter Mask')
+        self.mask_display = self.ax3.imshow(self.filter_mask, cmap='gray', vmin=0, vmax=1)
+        self.ax3.axis('off')
+        
+        self.ax4 = plt.subplot(2, 3, 4)
+        self.ax4.set_title('Filtered Image')
+        self.filtered_display = self.ax4.imshow(self.original_image, cmap='gray')
+        self.ax4.axis('off')
+        
+        self.ax5 = plt.subplot(2, 3, 5)
+        self.ax5.set_title('Filtered Spectrum')
+        self.filtered_spectrum_display = self.ax5.imshow(self.magnitude_spectrum, cmap='jet')
+        self.ax5.axis('on')
+        plt.colorbar(self.filtered_spectrum_display, ax=self.ax5, fraction=0.046)
+        
+        self.ax6 = plt.subplot(2, 3, 6)
+        self.ax6.set_title('Difference (Original - Filtered)')
+        self.diff_display = self.ax6.imshow(np.zeros_like(self.original_image), cmap='gray')
+        self.ax6.axis('off')
+        
+        self.fig.subplots_adjust(left=0.05, right=0.95, top=0.93, bottom=0.08, 
+                                hspace=0.3, wspace=0.3)
+        
+        ax_clear = plt.axes([0.81, 0.02, 0.1, 0.04])
+        self.btn_clear = Button(ax_clear, 'Clear Regions')
+        self.btn_clear.on_clicked(self.clear_regions)
+        
+        self.fig.canvas.mpl_connect('button_press_event', self.on_mouse_press)
+        self.fig.canvas.mpl_connect('motion_notify_event', self.on_mouse_move)
+        self.fig.canvas.mpl_connect('button_release_event', self.on_mouse_release)
+    
+    def on_mouse_press(self, event):
+        
+        if event.inaxes == self.ax2:
+            self.rect_start = (int(event.xdata), int(event.ydata))
+            self.current_rect = Rectangle(self.rect_start, 0, 0, 
+                                         linewidth=2, edgecolor='red', 
+                                         facecolor='red', alpha=0.3)
+            self.ax2.add_patch(self.current_rect)
+    
+    def on_mouse_move(self, event):
+        
+        if self.current_rect is not None and event.inaxes == self.ax2:
+            width = int(event.xdata) - self.rect_start[0]
+            height = int(event.ydata) - self.rect_start[1]
+            self.current_rect.set_width(width)
+            self.current_rect.set_height(height)
+            self.fig.canvas.draw_idle()
+    
+    def on_mouse_release(self, event):
+        
+        if self.current_rect is not None and event.inaxes == self.ax2:
+            x1, y1 = self.rect_start
+            x2, y2 = int(event.xdata), int(event.ydata)
+            
+            
+            x_min, x_max = min(x1, x2), max(x1, x2)
+            y_min, y_max = min(y1, y2), max(y1, y2)
+            
+            
+            h, w = self.filter_mask.shape
+            x_min = max(0, min(x_min, w-1))
+            x_max = max(0, min(x_max, w-1))
+            y_min = max(0, min(y_min, h-1))
+            y_max = max(0, min(y_max, h-1))
+            
+            if x_max > x_min and y_max > y_min:
+                self.selected_regions.append((x_min, x_max, y_min, y_max))
+                self.apply_filter()
+            
+            self.current_rect = None
+            self.rect_start = None
+    
+    def apply_filter(self):
+        
+        
+        self.filter_mask = np.ones_like(self.original_image, dtype=float)
+        
+        for x_min, x_max, y_min, y_max in self.selected_regions:
+            self.filter_mask[y_min:y_max, x_min:x_max] = 0
+        
+        filtered_f_shift = self.f_shift * self.filter_mask
+        
+        f_ishift = np.fft.ifftshift(filtered_f_shift)
+        filtered_image = np.fft.ifft2(f_ishift)
+        filtered_image = np.abs(filtered_image)
+        
+        difference = np.abs(self.original_image.astype(float) - filtered_image)
+        
+        filtered_magnitude = np.log(np.abs(filtered_f_shift) + 1)
+        
+        self.mask_display.set_data(self.filter_mask)
+        self.filtered_display.set_data(filtered_image)
+        self.filtered_display.set_clim(vmin=filtered_image.min(), vmax=filtered_image.max())
+        self.filtered_spectrum_display.set_data(filtered_magnitude)
+        self.diff_display.set_data(difference)
+        self.diff_display.set_clim(vmin=difference.min(), vmax=difference.max())
+        
+        for patch in self.ax2.patches[:]:
+            patch.remove()
+        for x_min, x_max, y_min, y_max in self.selected_regions:
+            rect = Rectangle((x_min, y_min), x_max - x_min, y_max - y_min,
+                           linewidth=2, edgecolor='red', facecolor='red', alpha=0.3)
+            self.ax2.add_patch(rect)
+        
+        self.fig.canvas.draw_idle()
+    
+    def clear_regions(self, event):
+        
+        self.selected_regions = []
+        self.filter_mask = np.ones_like(self.original_image, dtype=float)
+        
+        
+        for patch in self.ax2.patches[:]:
+            patch.remove()
+        
+        self.mask_display.set_data(self.filter_mask)
+        self.filtered_display.set_data(self.original_image)
+        self.filtered_spectrum_display.set_data(self.magnitude_spectrum)
+        self.diff_display.set_data(np.zeros_like(self.original_image))
+        
+        self.fig.canvas.draw_idle()
+    
+    def show(self):
+        
+        plt.show()
+
+if __name__ == "__main__":
+    analyzer = FrequencySpectrumAnalyzer(r'C:\Users\Thinkpad\Pictures\image processing - slide 4\image.jpg')
+    analyzer.show()
+
