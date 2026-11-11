@@ -1,0 +1,286 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import time
+
+def load_image(image_path):
+    image = cv2.imread(image_path)
+
+    if image is None:
+        raise ValueError("Image could not be loaded. Check the image path.")
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    return image, gray
+
+def detect_harris_corners(gray, max_corners=300):
+    gray_float = np.float32(gray)
+
+    response = cv2.cornerHarris(
+        gray_float,
+        blockSize=2,
+        ksize=3,
+        k=0.04
+    )
+
+    response = cv2.dilate(response, None)
+    threshold = 0.01 * response.max()
+
+    points = np.argwhere(response > threshold)
+    points = points[:, [1, 0]]
+
+    if len(points) > max_corners:
+        values = response[points[:, 1], points[:, 0]]
+        selected_indices = np.argsort(values)[-max_corners:]
+        points = points[selected_indices]
+
+    keypoints = [cv2.KeyPoint(float(x), float(y), 3) for x, y in points]
+
+    return keypoints, response
+
+def detect_shi_tomasi_corners(gray, max_corners=300):
+    corners = cv2.goodFeaturesToTrack(
+        gray,
+        maxCorners=max_corners,
+        qualityLevel=0.01,
+        minDistance=8,
+        blockSize=3
+    )
+
+    if corners is None:
+        return [], None
+
+    corners = corners.reshape(-1, 2)
+    keypoints = [cv2.KeyPoint(float(x), float(y), 3) for x, y in corners]
+
+    return keypoints, None
+
+def detect_fast_corners(gray, max_corners=300):
+    detector = cv2.FastFeatureDetector_create(
+        threshold=25,
+        nonmaxSuppression=True
+    )
+
+    keypoints = detector.detect(gray, None)
+    keypoints = sorted(keypoints, key=lambda kp: kp.response, reverse=True)
+    keypoints = keypoints[:max_corners]
+
+    return keypoints, None
+
+def detect_orb_corners(gray, max_corners=300):
+    detector = cv2.ORB_create(nfeatures=max_corners)
+    keypoints, descriptors = detector.detectAndCompute(gray, None)
+
+    if keypoints is None:
+        keypoints = []
+
+    return keypoints, descriptors
+
+def detect_sift_corners(gray, max_corners=300):
+    try:
+        detector = cv2.SIFT_create(nfeatures=max_corners)
+    except AttributeError:
+        raise RuntimeError("SIFT is not available. Install opencv-contrib-python.")
+
+    keypoints, descriptors = detector.detectAndCompute(gray, None)
+
+    if keypoints is None:
+        keypoints = []
+
+    return keypoints, descriptors
+
+def draw_keypoints(image, keypoints, title):
+    output = image.copy()
+    output = cv2.drawKeypoints(
+        output,
+        keypoints,
+        None,
+        flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS
+    )
+
+    output = cv2.cvtColor(output, cv2.COLOR_BGR2RGB)
+
+    plt.imshow(output)
+    plt.title(title)
+    plt.axis("off")
+
+def rotate_image(gray, angle=10):
+    h, w = gray.shape
+    center = (w // 2, h // 2)
+
+    matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+    rotated = cv2.warpAffine(gray, matrix, (w, h))
+
+    return rotated, matrix
+
+def transform_points(keypoints, matrix):
+    if len(keypoints) == 0:
+        return np.empty((0, 2))
+
+    points = np.array([kp.pt for kp in keypoints], dtype=np.float32)
+    ones = np.ones((points.shape[0], 1), dtype=np.float32)
+    homogeneous_points = np.hstack([points, ones])
+
+    transformed_points = homogeneous_points @ matrix.T
+    return transformed_points
+
+def compute_repeatability(original_keypoints, transformed_keypoints, rotated_keypoints, distance_threshold=5):
+    if len(original_keypoints) == 0 or len(rotated_keypoints) == 0:
+        return 0.0
+
+    transformed_points = transformed_keypoints
+    rotated_points = np.array([kp.pt for kp in rotated_keypoints], dtype=np.float32)
+
+    repeated_count = 0
+
+    for point in transformed_points:
+        distances = np.linalg.norm(rotated_points - point, axis=1)
+        if np.min(distances) < distance_threshold:
+            repeated_count += 1
+
+    repeatability = repeated_count / max(len(original_keypoints), 1)
+    return repeatability
+
+def compute_distinctiveness(gray, keypoints, patch_size=11):
+    if len(keypoints) < 2:
+        return 0.0
+
+    h, w = gray.shape
+    radius = patch_size // 2
+
+    patches = []
+
+    for kp in keypoints:
+        x, y = int(kp.pt[0]), int(kp.pt[1])
+
+        if x - radius < 0 or x + radius >= w or y - radius < 0 or y + radius >= h:
+            continue
+
+        patch = gray[y - radius:y + radius + 1, x - radius:x + radius + 1]
+        patch = patch.astype(np.float32).flatten()
+
+        if np.std(patch) > 1e-6:
+            patch = (patch - np.mean(patch)) / np.std(patch)
+
+        patches.append(patch)
+
+    if len(patches) < 2:
+        return 0.0
+
+    patches = np.array(patches)
+
+    distances = []
+
+    for i in range(len(patches)):
+        for j in range(i + 1, len(patches)):
+            distance = np.linalg.norm(patches[i] - patches[j])
+            distances.append(distance)
+
+    return float(np.mean(distances))
+
+def evaluate_algorithm(name, detector_function, image, gray, rotated_gray, rotation_matrix):
+    start_time = time.time()
+    keypoints, extra_data = detector_function(gray)
+    runtime = time.time() - start_time
+
+    rotated_keypoints, _ = detector_function(rotated_gray)
+
+    transformed_points = transform_points(keypoints, rotation_matrix)
+
+    repeatability = compute_repeatability(
+        keypoints,
+        transformed_points,
+        rotated_keypoints
+    )
+
+    distinctiveness = compute_distinctiveness(gray, keypoints)
+
+    result = {
+        "Algorithm": name,
+        "Number of Corners": len(keypoints),
+        "Repeatability": repeatability,
+        "Distinctiveness": distinctiveness,
+        "Runtime (seconds)": runtime
+    }
+
+    return result, keypoints
+
+def compare_corner_algorithms(image_path):
+    image, gray = load_image(image_path)
+
+    rotated_gray, rotation_matrix = rotate_image(gray, angle=10)
+
+    algorithms = {
+        "Harris": detect_harris_corners,
+        "Shi-Tomasi": detect_shi_tomasi_corners,
+        "FAST": detect_fast_corners,
+        "ORB": detect_orb_corners,
+        "SIFT": detect_sift_corners
+    }
+
+    results = []
+    keypoints_dictionary = {}
+
+    for name, detector_function in algorithms.items():
+        result, keypoints = evaluate_algorithm(
+            name,
+            detector_function,
+            image,
+            gray,
+            rotated_gray,
+            rotation_matrix
+        )
+
+        results.append(result)
+        keypoints_dictionary[name] = keypoints
+
+    report = pd.DataFrame(results)
+
+    print("\nCorner Detection Comparison Report")
+    print("----------------------------------")
+    print(report.to_string(index=False))
+
+    plt.figure(figsize=(16, 10))
+
+    for index, (name, keypoints) in enumerate(keypoints_dictionary.items()):
+        plt.subplot(2, 3, index + 1)
+        draw_keypoints(image, keypoints, name)
+
+    plt.subplot(2, 3, 6)
+    plt.imshow(gray, cmap="gray")
+    plt.title("Original Grayscale Image")
+    plt.axis("off")
+
+    plt.tight_layout()
+    plt.show()
+
+    plt.figure(figsize=(12, 5))
+
+    plt.subplot(1, 2, 1)
+    plt.bar(report["Algorithm"], report["Repeatability"])
+    plt.title("Repeatability Comparison")
+    plt.xlabel("Algorithm")
+    plt.ylabel("Repeatability")
+
+    plt.subplot(1, 2, 2)
+    plt.bar(report["Algorithm"], report["Distinctiveness"])
+    plt.title("Distinctiveness Comparison")
+    plt.xlabel("Algorithm")
+    plt.ylabel("Distinctiveness")
+
+    plt.tight_layout()
+    plt.show()
+
+    best_repeatability = report.loc[report["Repeatability"].idxmax()]
+    best_distinctiveness = report.loc[report["Distinctiveness"].idxmax()]
+    fastest_algorithm = report.loc[report["Runtime (seconds)"].idxmin()]
+
+    print("\nFinal Analysis")
+    print("--------------")
+    print(f"Best repeatability: {best_repeatability['Algorithm']}")
+    print(f"Best distinctiveness: {best_distinctiveness['Algorithm']}")
+    print(f"Fastest algorithm: {fastest_algorithm['Algorithm']}")
+
+    return report
+
+report = compare_corner_algorithms(r'C:\Users\Thinkpad\Pictures\image processing -\chapter 5\ex1\ex1.jpg')
