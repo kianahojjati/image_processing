@@ -1,0 +1,154 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+def analyze_image(gray):
+    hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).ravel()
+
+    lap = cv2.Laplacian(gray, cv2.CV_64F)
+    noise_score = lap.var()
+
+    mean_intensity = np.mean(gray)
+    std_intensity = np.std(gray)
+    contrast_score = std_intensity / 255.0
+
+    return hist, noise_score, mean_intensity, std_intensity, contrast_score
+
+def choose_adaptive_canny_parameters(gray, noise_score, contrast_score):
+    median_intensity = np.median(gray)
+
+    if noise_score > 700:
+        blur_kernel = 7
+        sigma = 1.6
+    elif noise_score > 250:
+        blur_kernel = 5
+        sigma = 1.2
+    else:
+        blur_kernel = 3
+        sigma = 0.8
+
+    if contrast_score < 0.15:
+        lower_factor = 0.45
+        upper_factor = 1.15
+    elif contrast_score < 0.30:
+        lower_factor = 0.55
+        upper_factor = 1.35
+    else:
+        lower_factor = 0.65
+        upper_factor = 1.55
+
+    lower = int(max(0, lower_factor * median_intensity))
+    upper = int(min(255, upper_factor * median_intensity))
+
+    if lower >= upper:
+        lower = int(0.4 * upper)
+
+    return lower, upper, blur_kernel, sigma
+
+def classify_edges(gray, lower, upper, blur_kernel, sigma):
+    blurred = cv2.GaussianBlur(gray, (blur_kernel, blur_kernel), sigma)
+
+    gx = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=3)
+    gy = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=3)
+
+    magnitude = np.sqrt(gx ** 2 + gy ** 2)
+    magnitude = cv2.normalize(magnitude, None, 0, 255, cv2.NORM_MINMAX)
+    magnitude = magnitude.astype(np.uint8)
+
+    edges = cv2.Canny(blurred, lower, upper)
+
+    strong_edges = magnitude >= upper
+    weak_edges = (magnitude >= lower) & (magnitude < upper)
+
+    colored_edges = np.zeros((gray.shape[0], gray.shape[1], 3), dtype=np.uint8)
+    colored_edges[weak_edges] = [255, 0, 0]      # Blue: weak edges
+    colored_edges[strong_edges] = [0, 0, 255]    # Red: strong edges
+
+    final_edges = edges > 0
+    colored_edges[final_edges] = [0, 255, 0]     # Green: accepted Canny edges
+
+    return blurred, magnitude, edges, colored_edges
+
+def adaptive_canny_edge_detection(image_path):
+    image = cv2.imread(image_path)
+
+    if image is None:
+        raise ValueError("Image could not be loaded. Check the image path.")
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    hist, noise_score, mean_intensity, std_intensity, contrast_score = analyze_image(gray)
+
+    lower, upper, blur_kernel, sigma = choose_adaptive_canny_parameters(
+        gray,
+        noise_score,
+        contrast_score
+    )
+
+    blurred, magnitude, edges, colored_edges = classify_edges(
+        gray,
+        lower,
+        upper,
+        blur_kernel,
+        sigma
+    )
+
+    print("Adaptive Canny Parameters")
+    print("-------------------------")
+    print(f"Noise score: {noise_score:.2f}")
+    print(f"Mean intensity: {mean_intensity:.2f}")
+    print(f"Standard deviation: {std_intensity:.2f}")
+    print(f"Contrast score: {contrast_score:.3f}")
+    print(f"Gaussian blur kernel: {blur_kernel}x{blur_kernel}")
+    print(f"Gaussian sigma: {sigma}")
+    print(f"Canny lower threshold: {lower}")
+    print(f"Canny upper threshold: {upper}")
+
+    plt.figure(figsize=(16, 10))
+
+    plt.subplot(2, 3, 1)
+    plt.imshow(gray, cmap="gray")
+    plt.title("Input Grayscale Image")
+    plt.axis("off")
+
+    plt.subplot(2, 3, 2)
+    plt.plot(hist)
+    plt.title("Image Histogram")
+    plt.xlabel("Intensity")
+    plt.ylabel("Frequency")
+
+    plt.subplot(2, 3, 3)
+    plt.imshow(blurred, cmap="gray")
+    plt.title("Adaptive Gaussian Smoothing")
+    plt.axis("off")
+
+    plt.subplot(2, 3, 4)
+    plt.imshow(magnitude, cmap="gray")
+    plt.title("Gradient Magnitude")
+    plt.axis("off")
+
+    plt.subplot(2, 3, 5)
+    plt.imshow(edges, cmap="gray")
+    plt.title("Final Canny Edges")
+    plt.axis("off")
+
+    plt.subplot(2, 3, 6)
+    plt.imshow(cv2.cvtColor(colored_edges, cv2.COLOR_BGR2RGB))
+    plt.title("Colored Edge Classes")
+    plt.axis("off")
+
+    plt.tight_layout()
+    plt.show()
+
+    return {
+        "noise_score": noise_score,
+        "mean_intensity": mean_intensity,
+        "std_intensity": std_intensity,
+        "contrast_score": contrast_score,
+        "lower_threshold": lower,
+        "upper_threshold": upper,
+        "blur_kernel": blur_kernel,
+        "sigma": sigma
+    }
+
+result = adaptive_canny_edge_detection(r'C:\Users\Thinkpad\Pictures\image processing -\chapter 5\ex1\ex1.jpg')
