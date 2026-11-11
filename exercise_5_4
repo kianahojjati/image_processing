@@ -1,0 +1,211 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+def load_grayscale_image(image_path):
+    image = cv2.imread(image_path)
+
+    if image is None:
+        raise ValueError("Image could not be loaded. Check the image path.")
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    return gray
+
+def medical_image_enhancement(gray):
+    clahe = cv2.createCLAHE(
+        clipLimit=2.0,
+        tileGridSize=(8, 8)
+    )
+
+    enhanced = clahe.apply(gray)
+
+    denoised = cv2.bilateralFilter(
+        enhanced,
+        d=7,
+        sigmaColor=45,
+        sigmaSpace=45
+    )
+
+    return enhanced, denoised
+
+def compute_gradient_magnitude(gray):
+    gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+
+    magnitude = np.sqrt(gx ** 2 + gy ** 2)
+    magnitude = cv2.normalize(
+        magnitude,
+        None,
+        0,
+        255,
+        cv2.NORM_MINMAX
+    )
+
+    return magnitude.astype(np.uint8)
+
+def regional_canny(image, block_size=96, overlap=24):
+    height, width = image.shape
+
+    final_edges = np.zeros_like(image, dtype=np.uint8)
+    low_threshold_map = np.zeros_like(image, dtype=np.uint8)
+    high_threshold_map = np.zeros_like(image, dtype=np.uint8)
+
+    step = block_size - overlap
+
+    for y in range(0, height, step):
+        for x in range(0, width, step):
+            y1 = y
+            y2 = min(y + block_size, height)
+            x1 = x
+            x2 = min(x + block_size, width)
+
+            region = image[y1:y2, x1:x2]
+
+            local_median = np.median(region)
+            local_std = np.std(region)
+
+            if local_std < 10:
+                sigma = 0.20
+            elif local_std < 30:
+                sigma = 0.33
+            else:
+                sigma = 0.45
+
+            low_threshold = int(max(5, (1.0 - sigma) * local_median))
+            high_threshold = int(min(255, (1.0 + sigma) * local_median))
+
+            if high_threshold <= low_threshold:
+                high_threshold = min(255, low_threshold + 30)
+
+            local_edges = cv2.Canny(
+                region,
+                low_threshold,
+                high_threshold,
+                apertureSize=3,
+                L2gradient=True
+            )
+
+            final_edges[y1:y2, x1:x2] = np.maximum(
+                final_edges[y1:y2, x1:x2],
+                local_edges
+            )
+
+            low_threshold_map[y1:y2, x1:x2] = low_threshold
+            high_threshold_map[y1:y2, x1:x2] = high_threshold
+
+    return final_edges, low_threshold_map, high_threshold_map
+
+def improve_thin_edges(edges):
+    small_kernel = np.ones((2, 2), np.uint8)
+
+    connected_edges = cv2.morphologyEx(
+        edges,
+        cv2.MORPH_CLOSE,
+        small_kernel,
+        iterations=1
+    )
+
+    try:
+        thin_edges = cv2.ximgproc.thinning(connected_edges)
+    except AttributeError:
+        thin_edges = connected_edges
+
+    return connected_edges, thin_edges
+
+def improved_canny_system(image_path):
+    gray = load_grayscale_image(image_path)
+
+    enhanced, denoised = medical_image_enhancement(gray)
+
+    gradient_magnitude = compute_gradient_magnitude(denoised)
+
+    standard_canny = cv2.Canny(
+        denoised,
+        50,
+        150,
+        apertureSize=3,
+        L2gradient=True
+    )
+
+    regional_edges, low_map, high_map = regional_canny(
+        denoised,
+        block_size=96,
+        overlap=24
+    )
+
+    connected_edges, thin_edges = improve_thin_edges(regional_edges)
+
+    standard_density = np.sum(standard_canny > 0) / standard_canny.size
+    improved_density = np.sum(thin_edges > 0) / thin_edges.size
+
+    print("\nImproved Canny Report")
+    print("---------------------")
+    print(f"Standard Canny edge density: {standard_density:.4f}")
+    print(f"Improved Canny edge density: {improved_density:.4f}")
+    print(f"Mean low regional threshold: {np.mean(low_map):.2f}")
+    print(f"Mean high regional threshold: {np.mean(high_map):.2f}")
+    print(f"Minimum low threshold: {np.min(low_map)}")
+    print(f"Maximum high threshold: {np.max(high_map)}")
+
+    plt.figure(figsize=(16, 12))
+
+    plt.subplot(3, 3, 1)
+    plt.imshow(gray, cmap="gray")
+    plt.title("Original Grayscale Image")
+    plt.axis("off")
+
+    plt.subplot(3, 3, 2)
+    plt.imshow(enhanced, cmap="gray")
+    plt.title("CLAHE Enhanced Image")
+    plt.axis("off")
+
+    plt.subplot(3, 3, 3)
+    plt.imshow(denoised, cmap="gray")
+    plt.title("Bilateral Denoised Image")
+    plt.axis("off")
+
+    plt.subplot(3, 3, 4)
+    plt.imshow(gradient_magnitude, cmap="gray")
+    plt.title("Gradient Magnitude")
+    plt.axis("off")
+
+    plt.subplot(3, 3, 5)
+    plt.imshow(standard_canny, cmap="gray")
+    plt.title("Standard Canny")
+
+    plt.axis("off")
+
+    plt.subplot(3, 3, 6)
+    plt.imshow(regional_edges, cmap="gray")
+    plt.title("Regional Adaptive Canny")
+    plt.axis("off")
+
+    plt.subplot(3, 3, 7)
+    plt.imshow(thin_edges, cmap="gray")
+    plt.title("Improved Thin Edges")
+    plt.axis("off")
+
+    plt.subplot(3, 3, 8)
+    plt.imshow(low_map, cmap="gray")
+    plt.title("Regional Low Threshold Map")
+    plt.axis("off")
+
+    plt.subplot(3, 3, 9)
+    plt.imshow(high_map, cmap="gray")
+    plt.title("Regional High Threshold Map")
+    plt.axis("off")
+
+    plt.tight_layout()
+    plt.show()
+
+    return {
+        "standard_canny": standard_canny,
+        "regional_edges": regional_edges,
+        "thin_edges": thin_edges,
+        "low_threshold_map": low_map,
+        "high_threshold_map": high_map,
+        "standard_density": standard_density,
+        "improved_density": improved_density
+    }
+
+result = improved_canny_system(r'C:\Users\Thinkpad\Pictures\image processing -\chapter 5\ex4\xray.jpeg')
