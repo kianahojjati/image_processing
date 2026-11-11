@@ -1,0 +1,53 @@
+import cv2
+import matplotlib.pyplot as plt
+
+# Load image as BGR
+image = cv2.imread(r'C:\Users\Thinkpad\Pictures\image.jpg')
+
+if image is None:
+    print("Error: Image not found! Check the file path.")
+    exit()
+
+# Convert to RGB
+image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+# 1.Display basic information
+print(f"Dimensions (Height, Width, Channels): {image.shape}")
+print(f"Data type: {image.dtype}")
+print(f"Maximum value: {image.max()}")
+print(f"Minimum value: {image.min()}")
+
+# Display image
+plt.imshow(image_rgb)
+plt.axis('off')
+plt.title("Original Image")
+plt.show()
+
+# 2.Convert to Grayscale
+gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+plt.imshow(gray_image, cmap='gray')
+plt.axis('off')
+plt.title("Grayscale Image")
+plt.show()
+
+print("\nImage cropping")
+x1 = int(input("Enter the X-axis start coordinates (column):"))
+y1 = int(input("Enter the Y axis start coordinates (row):"))
+x2 = int(input("Enter the X axis end coordinates (column):"))
+y2 = int(input("Enter the Y-axis end coordinates (row):"))
+
+# 3.Crop a part of the image and save it
+cropped_image = image[y1:y2, x1:x2]
+
+if cropped_image.size == 0:
+    print("Error! The entered range is incorrect.")
+else:
+    cv2.imwrite('cropped_output.jpg', cropped_image)
+    print("The cropped portion was saved as cropped_output.jpg.")
+    
+    plt.imshow(cv2.cvtColor(cropped_image, cv2.COLOR_BGR2RGB))
+    plt.title("Cropped Image")
+    plt.axis('off')
+    plt.show()
+
