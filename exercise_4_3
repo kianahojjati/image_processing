@@ -1,0 +1,180 @@
+import numpy as np
+import cv2
+import matplotlib.pyplot as plt
+from skimage.metrics import peak_signal_noise_ratio, structural_similarity
+
+class MedicalImageEnhancement:
+    def __init__(self, image_path):
+        self.original_image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        if self.original_image is None:
+            raise ValueError("Error! Cannot load image!")
+        
+        self.rows, self.cols = self.original_image.shape
+        self.crow, self.ccol = self.rows // 2, self.cols // 2
+        
+    def detect_noise_type(self):
+        """تشخیص نوع نویز"""
+        # محاسبه FFT
+        f_transform = np.fft.fft2(self.original_image)
+        f_shift = np.fft.fftshift(f_transform)
+        magnitude = np.abs(f_shift)
+        
+        # آنالیز طیف
+        center_region = magnitude[self.crow-20:self.crow+20, 
+                                 self.ccol-20:self.ccol+20]
+        edge_region = np.concatenate([
+            magnitude[0:20, :].flatten(),
+            magnitude[-20:, :].flatten(),
+            magnitude[:, 0:20].flatten(),
+            magnitude[:, -20:].flatten()
+        ])
+        
+        center_energy = np.mean(center_region)
+        edge_energy = np.mean(edge_region)
+        
+        if edge_energy / center_energy > 0.3:
+            return "High-frequency noise (Salt & Pepper or Gaussian)"
+        else:
+            return "Low-frequency noise or periodic pattern"
+    
+    def remove_gaussian_noise(self, D0=30):
+        """حذف نویز گاوسی با فیلتر Gaussian Lowpass"""
+        f_transform = np.fft.fft2(self.original_image)
+        f_shift = np.fft.fftshift(f_transform)
+        
+        # فیلتر گاوسی
+        mask = np.zeros((self.rows, self.cols))
+        for i in range(self.rows):
+            for j in range(self.cols):
+                D = np.sqrt((i - self.crow)**2 + (j - self.ccol)**2)
+                mask[i, j] = np.exp(-(D**2) / (2 * (D0**2)))
+        
+        f_shift_filtered = f_shift * mask
+        f_ishift = np.fft.ifftshift(f_shift_filtered)
+        img_back = np.fft.ifft2(f_ishift)
+        img_back = np.abs(img_back)
+        
+        return np.uint8(img_back)
+    
+    def remove_salt_pepper_noise(self):
+        """حذف نویز نمک و فلفل با فیلتر میانه"""
+        return cv2.medianBlur(self.original_image, 5)
+    
+    def enhance_contrast_frequency(self, high_boost=1.5):
+        """بهبود کنتراست در حوزه فرکانس"""
+        f_transform = np.fft.fft2(self.original_image)
+        f_shift = np.fft.fftshift(f_transform)
+        
+        # فیلتر High-boost
+        D0 = 30
+        mask = np.zeros((self.rows, self.cols))
+        for i in range(self.rows):
+            for j in range(self.cols):
+                D = np.sqrt((i - self.crow)**2 + (j - self.ccol)**2)
+                mask[i, j] = np.exp(-(D**2) / (2 * (D0**2)))
+        
+        # High-boost = (A-1) + Highpass
+        highpass = 1 - mask
+        high_boost_filter = (high_boost - 1) + highpass
+        
+        f_shift_filtered = f_shift * high_boost_filter
+        f_ishift = np.fft.ifftshift(f_shift_filtered)
+        img_back = np.fft.ifft2(f_ishift)
+        img_back = np.abs(img_back)
+        
+        # نرمال‌سازی
+        img_back = np.uint8(255 * (img_back - np.min(img_back)) / 
+                           (np.max(img_back) - np.min(img_back)))
+        
+        return img_back
+    
+    def adaptive_contrast_enhancement(self):
+        """بهبود کنتراست تطبیقی (CLAHE)"""
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        return clahe.apply(self.original_image)
+    
+    def calculate_quality_metrics(self, processed_image, reference_image=None):
+        """محاسبه معیارهای کیفیت"""
+        metrics = {}
+        
+        # میانگین و انحراف معیار
+        metrics['Mean'] = np.mean(processed_image)
+        metrics['Std Dev'] = np.std(processed_image)
+        
+        # کنتراست
+        metrics['Contrast'] = np.max(processed_image) - np.min(processed_image)
+        
+        hist, _ = np.histogram(processed_image, bins=256, range=(0, 256))
+        hist = hist / hist.sum()
+        hist = hist[hist > 0]
+        metrics['Entropy'] = -np.sum(hist * np.log2(hist))
+        
+        if reference_image is not None:
+            metrics['PSNR'] = peak_signal_noise_ratio(reference_image, processed_image)
+            metrics['SSIM'] = structural_similarity(reference_image, processed_image)
+            metrics['MSE'] = np.mean((reference_image.astype(float) - 
+                                     processed_image.astype(float))**2)
+        
+        return metrics
+    
+    def process_and_report(self):
+        """پردازش کامل و گزارش"""
+        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+        
+        # تصویر اصلی
+        axes[0, 0].imshow(self.original_image, cmap='gray')
+        axes[0, 0].set_title('original image')
+        axes[0, 0].axis('off')
+        
+        # تشخیص نویز
+        noise_type = self.detect_noise_type()
+        
+        # حذف نویز گاوسی
+        denoised_gaussian = self.remove_gaussian_noise()
+        axes[0, 1].imshow(denoised_gaussian, cmap='gray')
+        axes[0, 1].set_title('remove gaussian noise')
+        axes[0, 1].axis('off')
+        
+        # حذف نویز نمک و فلفل
+        denoised_sp = self.remove_salt_pepper_noise()
+        axes[0, 2].imshow(denoised_sp, cmap='gray')
+        axes[0, 2].set_title('remove salt pepper noise')
+        axes[0, 2].axis('off')
+        
+        # بهبود کنتراست فرکانسی
+        enhanced_freq = self.enhance_contrast_frequency()
+        axes[1, 0].imshow(enhanced_freq, cmap='gray')
+        axes[1, 0].set_title('enhance contrast frequency')
+        axes[1, 0].axis('off')
+        
+        # بهبود کنتراست 
+        enhanced_clahe = self.adaptive_contrast_enhancement()
+        axes[1, 1].imshow(enhanced_clahe, cmap='gray')
+        axes[1, 1].set_title('contrastenhancement(CLAHE)')
+        axes[1, 1].axis('off')
+        
+        # گزارش معیارها
+        metrics_original = self.calculate_quality_metrics(self.original_image)
+        metrics_enhanced = self.calculate_quality_metrics(enhanced_freq)
+        
+        report = f"noise type: {noise_type}\n\n"
+        report += "original image:\n"
+        for key, value in metrics_original.items():
+            report += f"  {key}: {value:.2f}\n"
+        report += "\n enhanced image:\n"
+        for key, value in metrics_enhanced.items():
+            report += f"  {key}: {value:.2f}\n"
+        
+        axes[1, 2].text(0.1, 0.5, report, fontsize=10, 
+                       verticalalignment='center', family='monospace')
+        axes[1, 2].axis('off')
+        
+        plt.tight_layout()
+        plt.savefig('medical_enhancement_report.png', dpi=150, bbox_inches='tight')
+        plt.show()
+        
+        return report
+
+enhancer = MedicalImageEnhancement(r'C:\Users\Thinkpad\Pictures\image processing - slide 4\Ex 3\medical_image.jpg')
+report = enhancer.process_and_report()
+print(report)
