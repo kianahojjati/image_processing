@@ -1,0 +1,150 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+def calculate_histogram(image):
+    """Calculate histogram"""
+    hist = cv2.calcHist([image], [0], None, [256], [0, 256])
+    return hist.flatten()
+
+def analyze_histogram(image):
+    """Analyze histogram"""
+    hist = calculate_histogram(image)
+    
+    mean_intensity = np.mean(image)  # Calculate mean and standard deviation
+    std_intensity = np.std(image)
+    
+    min_val = np.min(image)    # Find value range
+    max_val = np.max(image)
+    
+    cdf = hist.cumsum()     # Calculate cumulative percentages
+    cdf_normalized = cdf / cdf[-1]
+    
+    return {
+        'mean': mean_intensity,
+        'std': std_intensity,
+        'min': min_val,
+        'max': max_val,
+        'cdf': cdf_normalized,
+        'hist': hist
+    }
+
+def auto_adjust_contrast(image):
+    """Automatically adjust contrast and brightness"""
+    stats = analyze_histogram(image)
+    
+    mean = stats['mean']
+    std = stats['std']
+    
+    # Detect problem type and adjust parameters
+    if mean < 85:
+        beta = 50
+        alpha = 1.2
+        problem = "Dark Image"
+    elif mean > 170:  
+        beta = -30
+        alpha = 1.1
+        problem = "Bright Image"
+    elif std < 40:
+        beta = 0
+        alpha = 1.5
+        problem = "Low Contrast"
+    else:
+        alpha = 1.0
+        beta = 0
+        problem = "Normal Image"
+    
+    # Apply adjustments
+    adjusted = cv2.convertScaleAbs(image, alpha=alpha, beta=beta)
+    
+    return adjusted, alpha, beta, problem
+
+def plot_results(original, adjusted, equalized):
+    """Display results"""
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    fig.suptitle('Automatic Contrast Adjustment System', fontsize=16, fontweight='bold')
+    
+    # Original image
+    axes[0, 0].imshow(original, cmap='gray')
+    axes[0, 0].set_title('Original Image')
+    axes[0, 0].axis('off')
+    
+    # Original histogram
+    hist_orig = calculate_histogram(original)
+    axes[1, 0].bar(range(256), hist_orig, width=1.0, color='blue', alpha=0.7)
+    axes[1, 0].set_title('Original Histogram')
+    axes[1, 0].set_xlim([0, 255])
+    axes[1, 0].set_xlabel('Gray Level')
+    axes[1, 0].set_ylabel('Frequency')
+    
+    # Enhanced image (auto adjustment)
+    axes[0, 1].imshow(adjusted, cmap='gray')
+    axes[0, 1].set_title('Auto Contrast Adjustment')
+    axes[0, 1].axis('off')
+    
+    # Enhanced histogram
+    hist_adj = calculate_histogram(adjusted)
+    axes[1, 1].bar(range(256), hist_adj, width=1.0, color='green', alpha=0.7)
+    axes[1, 1].set_title('Enhanced Histogram')
+    axes[1, 1].set_xlim([0, 255])
+    axes[1, 1].set_xlabel('Gray Level')
+    axes[1, 1].set_ylabel('Frequency')
+    
+    # Histogram equalization
+    axes[0, 2].imshow(equalized, cmap='gray')
+    axes[0, 2].set_title('Histogram Equalization')
+    axes[0, 2].axis('off')
+    
+    # Equalized histogram
+    hist_eq = calculate_histogram(equalized)
+    axes[1, 2].bar(range(256), hist_eq, width=1.0, color='red', alpha=0.7)
+    axes[1, 2].set_title('Equalized Histogram')
+    axes[1, 2].set_xlim([0, 255])
+    axes[1, 2].set_xlabel('Gray Level')
+    axes[1, 2].set_ylabel('Frequency')
+    
+    plt.tight_layout()
+    plt.show()
+
+def main():
+    # Load image
+    image_path = r'C:\Users\Thinkpad\Pictures\image.jpg' 
+    img = cv2.imread(image_path, 0)
+    
+    if img is None:
+        print("Error: Image not found!")
+        return
+    
+    print("=" * 60)
+    print("Exercise 1: Automatic Contrast Adjustment System")
+    print("=" * 60)
+    
+    # Histogram analysis
+    stats = analyze_histogram(img)
+    print("\n--- Histogram Analysis ---")
+    print(f"Mean Intensity: {stats['mean']:.2f}")
+    print(f"Standard Deviation: {stats['std']:.2f}")
+    print(f"Minimum Value: {stats['min']}")
+    print(f"Maximum Value: {stats['max']}")
+    
+    # Auto adjustment
+    adjusted, alpha, beta, problem = auto_adjust_contrast(img)
+    print(f"\n--- Problem Detection ---")
+    print(f"Problem Type: {problem}")
+    print(f"\n--- Adjusted Parameters ---")
+    print(f"Alpha (Contrast): {alpha}")
+    print(f"Beta (Brightness): {beta}")
+    
+    # Histogram equalization for comparison
+    equalized = cv2.equalizeHist(img)
+    
+    # Display results
+    plot_results(img, adjusted, equalized)
+    
+    # Save results
+    cv2.imwrite('result_auto_adjusted.jpg', adjusted)
+    cv2.imwrite('result_equalized.jpg', equalized)
+    print("\n Results saved.")
+
+if __name__ == "__main__":
+    main()
