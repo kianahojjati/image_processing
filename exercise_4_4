@@ -1,0 +1,484 @@
+import numpy as np
+import cv2
+import matplotlib.pyplot as plt
+from matplotlib.widgets import Slider, Button
+from scipy.signal import find_peaks
+from skimage.metrics import structural_similarity as ssim
+
+class PeriodicNoiseRemover:
+    def __init__(self, image_path):
+        self.original = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        if self.original is None:
+            raise ValueError(f"Cannot load image: {image_path}")
+        
+        # نرمال‌سازی
+        self.image = cv2.normalize(self.original, None, 0, 255, 
+                                   cv2.NORM_MINMAX).astype(np.uint8)
+        
+        self.compute_fft()   # محاسبه FFT
+        
+        # تشخیص خودکار فرکانس‌های تکراری
+        self.detected_frequencies = self.detect_periodic_frequencies()
+        
+        # لیست فرکانس‌های انتخاب شده برای حذف
+        self.selected_frequencies = []
+        
+        self.setup_ui()
+    
+    def compute_fft(self):
+        """محاسبه تبدیل فوریه"""
+        # FFT
+        f = np.fft.fft2(self.image)
+        self.fshift = np.fft.fftshift(f)
+        
+        self.magnitude_spectrum = np.log(np.abs(self.fshift) + 1)   # طیف قدرت
+        
+        self.rows, self.cols = self.image.shape       # ابعاد
+        self.crow, self.ccol = self.rows // 2, self.cols // 2
+    
+    def detect_periodic_frequencies(self, threshold_percentile=99.5):
+        """تشخیص خودکار فرکانس‌های تکراری"""
+        # کپی طیف
+        spectrum = self.magnitude_spectrum.copy()
+        
+        # حذف مرکز (DC component)
+        mask_radius = 10
+        y, x = np.ogrid[:self.rows, :self.cols]
+        center_mask = (x - self.ccol)**2 + (y - self.crow)**2 <= mask_radius**2
+        spectrum[center_mask] = 0
+        
+        # یافتن قله‌های قوی
+        threshold = np.percentile(spectrum, threshold_percentile)
+        peaks = spectrum > threshold
+        
+        peak_coords = np.argwhere(peaks)     # یافتن مختصات قله‌ها
+        
+        # محاسبه فاصله از مرکز
+        distances = np.sqrt((peak_coords[:, 0] - self.crow)**2 + 
+                           (peak_coords[:, 1] - self.ccol)**2)
+        
+        valid_peaks = peak_coords[distances > mask_radius]     # فیلتر قله‌های خیلی نزدیک به مرکز
+        
+        # گروه‌بندی قله‌های متقارن (فرکانس‌های مثبت و منفی)
+        frequencies = []
+        used = set()
+        
+        for peak in valid_peaks:
+            y, x = peak
+            if tuple(peak) in used:
+                continue
+            
+            sym_y, sym_x = 2 * self.crow - y, 2 * self.ccol – x     # یافتن قله متقارن
+            
+            # اضافه کردن جفت فرکانس
+            frequencies.append({
+                'pos': (y, x),
+                'neg': (sym_y, sym_x),
+                'strength': spectrum[y, x]
+            })
+            
+            used.add((y, x))
+            used.add((sym_y, sym_x))
+        
+        frequencies.sort(key=lambda f: f['strength'], reverse=True)    # مرتب‌سازی بر اساس قدرت
+        
+        return frequencies[:10]  # برگرداندن ۱۰ فرکانس قوی‌تر
+    
+    def create_notch_filter(self, frequencies, radius, order=2):
+        """ایجاد فیلتر Notch برای حذف فرکانس‌های خاص"""
+        filter_mask = np.ones((self.rows, self.cols), dtype=np.float32)     # فیلتر اولیه
+        
+        y, x = np.ogrid[:self.rows, :self.cols]   # ایجاد meshgrid
+        
+        for freq in frequencies:
+            y_pos, x_pos = freq['pos']      # Notch برای فرکانس مثبت
+            dist_pos = np.sqrt((x - x_pos)**2 + (y - y_pos)**2)
+            notch_pos = 1 / (1 + (radius / (dist_pos + 1e-6))**(2 * order))
+            
+            y_neg, x_neg = freq['neg']      # Notch برای فرکانس منفی (متقارن)
+            dist_neg = np.sqrt((x - x_neg)**2 + (y - y_neg)**2)
+            notch_neg = 1 / (1 + (radius / (dist_neg + 1e-6))**(2 * order))
+            
+            filter_mask *= notch_pos * notch_neg        # ترکیب
+        
+        return filter_mask
+    
+    def apply_notch_filter(self, filter_mask):
+        """اعمال فیلتر Notch"""
+        filtered_fshift = self.fshift * filter_mask
+        
+        # تبدیل معکوس
+        f_ishift = np.fft.ifftshift(filtered_fshift)
+        img_back = np.fft.ifft2(f_ishift)
+        img_back = np.abs(img_back)
+        
+        # نرمال‌سازی
+        img_back = cv2.normalize(img_back, None, 0, 255, 
+                                cv2.NORM_MINMAX).astype(np.uint8)
+        
+        return img_back, filtered_fshift
+    
+    def calculate_metrics(self, original, filtered):
+        """محاسبه معیارهای کیفیت"""
+        # MSE
+        mse = np.mean((original.astype(float) - filtered.astype(float))**2)
+        
+        # PSNR
+        if mse == 0:
+            psnr = 100
+        else:
+            psnr = 20 * np.log10(255.0 / np.sqrt(mse))
+        
+        ssim_value = ssim(original, filtered, data_range=255)   # SSIM
+        
+        # SNR
+        signal_power = np.mean(original.astype(float)**2)
+        noise_power = mse
+        if noise_power == 0:
+            snr = 100
+        else:
+            snr = 10 * np.log10(signal_power / noise_power)
+        
+        return {
+            'MSE': mse,
+            'PSNR': psnr,
+            'SSIM': ssim_value,
+            'SNR': snr
+        }
+    
+    def setup_ui(self):
+        """راه‌اندازی رابط کاربری"""
+        self.fig = plt.figure(figsize=(18, 10))
+        self.fig.suptitle('Periodic Noise Removal System', 
+                         fontsize=16, fontweight='bold')
+        
+        # تنظیم layout
+        gs = self.fig.add_gridspec(3, 4, left=0.05, right=0.75, top=0.93,
+                                   bottom=0.05, hspace=0.35, wspace=0.3)
+        
+        # ردیف ۱: تصاویر اصلی
+        self.ax_original = self.fig.add_subplot(gs[0, 0])
+        self.ax_spectrum = self.fig.add_subplot(gs[0, 1])
+        self.ax_detected = self.fig.add_subplot(gs[0, 2])
+        self.ax_filter = self.fig.add_subplot(gs[0, 3])
+        
+        # ردیف ۲: نتایج فیلتر
+        self.ax_filtered_img = self.fig.add_subplot(gs[1, 0])
+        self.ax_filtered_spectrum = self.fig.add_subplot(gs[1, 1])
+        self.ax_difference = self.fig.add_subplot(gs[1, 2])
+        self.ax_metrics = self.fig.add_subplot(gs[1, 3])
+        
+        # ردیف ۳: پروفایل‌ها
+        self.ax_profile_original = self.fig.add_subplot(gs[2, 0:2])
+        self.ax_profile_filtered = self.fig.add_subplot(gs[2, 2:4])
+        
+        # پنل کنترل
+        control_ax = self.fig.add_axes([0.78, 0.65, 0.18, 0.28])
+        control_ax.axis('off')
+        control_ax.text(0.5, 0.95, 'Notch Filter Controls', ha='center',
+                       fontsize=12, fontweight='bold', transform=control_ax.transAxes)
+        
+        # Slider برای شعاع Notch
+        ax_radius = self.fig.add_axes([0.80, 0.85, 0.15, 0.02])
+        self.slider_radius = Slider(ax_radius, 'Notch Radius', 1, 30,
+                                    valinit=5, valstep=1)
+        
+        # Slider برای مرتبه فیلتر
+        ax_order = self.fig.add_axes([0.80, 0.80, 0.15, 0.02])
+        self.slider_order = Slider(ax_order, 'Filter Order', 1, 5,
+                                   valinit=2, valstep=1)
+        
+        # دکمه‌ها
+        ax_auto = self.fig.add_axes([0.80, 0.72, 0.15, 0.04])
+        self.btn_auto = Button(ax_auto, 'Auto Detect & Remove', color='lightblue')
+        self.btn_auto.on_clicked(self.auto_remove)
+        
+        ax_manual = self.fig.add_axes([0.80, 0.67, 0.15, 0.04])
+        self.btn_manual = Button(ax_manual, 'Manual Select (Click)', color='lightyellow')
+        self.btn_manual.on_clicked(self.enable_manual_selection)
+        
+        ax_clear = self.fig.add_axes([0.80, 0.62, 0.07, 0.04])
+        self.btn_clear = Button(ax_clear, 'Clear', color='lightcoral')
+        self.btn_clear.on_clicked(self.clear_selection)
+        
+        ax_apply = self.fig.add_axes([0.88, 0.62, 0.07, 0.04])
+        self.btn_apply = Button(ax_apply, 'Apply', color='lightgreen')
+        self.btn_apply.on_clicked(self.apply_manual_filter)
+        
+        ax_save = self.fig.add_axes([0.80, 0.57, 0.15, 0.04])
+        self.btn_save = Button(ax_save, 'Save Results', color='lightgreen')
+        self.btn_save.on_clicked(self.save_results)
+        
+        # متغیر برای حالت انتخاب دستی
+        self.manual_mode = False
+        
+        # اتصال کلیک
+        self.cid = self.fig.canvas.mpl_connect('button_press_event', self.on_click)
+        
+        # نمایش اولیه
+        self.display_initial()
+        
+        plt.show()
+    
+    def display_initial(self):
+        """نمایش اولیه"""
+        # تصویر اصلی
+        self.ax_original.imshow(self.image, cmap='gray')
+        self.ax_original.set_title('Original Image (with Periodic Noise)', 
+                                  fontweight='bold')
+        self.ax_original.axis('off')
+        
+        # طیف فرکانسی
+        self.ax_spectrum.imshow(self.magnitude_spectrum, cmap='hot')
+        self.ax_spectrum.set_title('Frequency Spectrum', fontweight='bold')
+        self.ax_spectrum.axis('off')
+        
+        # فرکانس‌های تشخیص داده شده
+        self.ax_detected.imshow(self.magnitude_spectrum, cmap='hot')
+        for i, freq in enumerate(self.detected_frequencies[:5]):
+            y, x = freq['pos']
+            self.ax_detected.plot(x, y, 'g+', markersize=15, markeredgewidth=2)
+            self.ax_detected.text(x + 5, y, f"{i+1}", color='green', 
+                                 fontsize=10, fontweight='bold')
+        self.ax_detected.set_title('Detected Periodic Frequencies', fontweight='bold')
+        self.ax_detected.axis('off')
+        
+        # پیام راهنما
+        self.ax_filter.text(0.5, 0.5, 'Click "Auto Detect & Remove"\nor\n"Manual Select"',
+                           ha='center', va='center', fontsize=12, 
+                           transform=self.ax_filter.transAxes)
+        self.ax_filter.set_title('Notch Filter Mask', fontweight='bold')
+        self.ax_filter.axis('off')
+        
+        self.fig.canvas.draw_idle()
+    
+    def auto_remove(self, event):
+        """حذف خودکار الگوهای تکراری"""
+        # استفاده از فرکانس‌های تشخیص داده شده
+        self.selected_frequencies = self.detected_frequencies[:5]  # ۵ فرکانس قوی‌تر
+        
+        self.apply_filter()      # اعمال فیلتر
+    
+    def enable_manual_selection(self, event):
+        """فعال‌سازی حالت انتخاب دستی"""
+        self.manual_mode = True
+        self.selected_frequencies = []
+        
+        # پیام راهنما
+        self.ax_detected.clear()
+        self.ax_detected.imshow(self.magnitude_spectrum, cmap='hot')
+        self.ax_detected.set_title('Click on frequencies to remove', 
+                                  fontweight='bold', color='red')
+        self.ax_detected.axis('off')
+        self.fig.canvas.draw_idle()
+    
+    def on_click(self, event):
+        """مدیریت کلیک روی طیف"""
+        if not self.manual_mode:
+            return
+        
+        if event.inaxes == self.ax_detected:
+            x, y = int(event.xdata), int(event.ydata)
+            
+            sym_y, sym_x = 2 * self.crow - y, 2 * self.ccol – x     # محاسبه فرکانس متقارن
+            
+            # اضافه کردن به لیست
+            self.selected_frequencies.append({
+                'pos': (y, x),
+                'neg': (sym_y, sym_x),
+                'strength': self.magnitude_spectrum[y, x]
+            })
+            
+            # نمایش نقطه انتخاب شده
+            self.ax_detected.plot(x, y, 'r+', markersize=15, markeredgewidth=2)
+            self.ax_detected.plot(sym_x, sym_y, 'r+', markersize=15, 
+                                 markeredgewidth=2)
+            self.fig.canvas.draw_idle()
+    
+    def clear_selection(self, event):
+        """پاک کردن انتخاب‌ها"""
+        self.selected_frequencies = []
+        self.manual_mode = False
+        
+        self.ax_detected.clear()
+        self.ax_detected.imshow(self.magnitude_spectrum, cmap='hot')
+        for i, freq in enumerate(self.detected_frequencies[:5]):
+            y, x = freq['pos']
+            self.ax_detected.plot(x, y, 'g+', markersize=15, markeredgewidth=2)
+        self.ax_detected.set_title('Detected Periodic Frequencies', fontweight='bold')
+        self.ax_detected.axis('off')
+        self.fig.canvas.draw_idle()
+    
+    def apply_manual_filter(self, event):
+        """اعمال فیلتر با فرکانس‌های انتخاب شده دستی"""
+        if not self.selected_frequencies:
+            print(" No frequencies selected!")
+            return
+        
+        self.manual_mode = False
+        self.apply_filter()
+    
+    def apply_filter(self):
+        """اعمال فیلتر Notch"""
+        if not self.selected_frequencies:
+            print(" No frequencies to filter!")
+            return
+        
+        # دریافت پارامترها
+        radius = int(self.slider_radius.val)
+        order = int(self.slider_order.val)
+        
+        # ایجاد فیلتر
+        filter_mask = self.create_notch_filter(self.selected_frequencies, 
+                                               radius, order)
+        
+        # اعمال فیلتر
+        filtered_img, filtered_fshift = self.apply_notch_filter(filter_mask)
+        
+        # محاسبه معیارها
+        metrics = self.calculate_metrics(self.image, filtered_img)
+        
+        # نمایش نتایج
+        self.display_results(filter_mask, filtered_img, filtered_fshift, metrics)
+    
+    def display_results(self, filter_mask, filtered_img, filtered_fshift, metrics):
+        """نمایش نتایج"""
+        # پاک کردن محورها
+        for ax in [self.ax_filter, self.ax_filtered_img, self.ax_filtered_spectrum,
+                   self.ax_difference, self.ax_metrics, self.ax_profile_original,
+                   self.ax_profile_filtered]:
+            ax.clear()
+        
+        # ماسک فیلتر
+        self.ax_filter.imshow(filter_mask, cmap='gray')
+        self.ax_filter.set_title('Notch Filter Mask', fontweight='bold')
+        self.ax_filter.axis('off')
+        
+        # تصویر فیلتر شده
+        self.ax_filtered_img.imshow(filtered_img, cmap='gray')
+        self.ax_filtered_img.set_title('Filtered Image (Noise Removed)', 
+                                      fontweight='bold')
+        self.ax_filtered_img.axis('off')
+        
+        # طیف فیلتر شده
+        filtered_spectrum = np.log(np.abs(filtered_fshift) + 1)
+        self.ax_filtered_spectrum.imshow(filtered_spectrum, cmap='hot')
+        self.ax_filtered_spectrum.set_title('Filtered Spectrum', fontweight='bold')
+        self.ax_filtered_spectrum.axis('off')
+        
+        # تفاوت (نویز حذف شده)
+        difference = cv2.absdiff(self.image, filtered_img)
+        self.ax_difference.imshow(difference, cmap='gray')
+        self.ax_difference.set_title('Removed Noise Pattern', fontweight='bold')
+        self.ax_difference.axis('off')
+        
+        # معیارهای کیفیت
+        metrics_text = (
+            "Quality Metrics:\n\n"
+            f"MSE: {metrics['MSE']:.2f}\n"
+            f"PSNR: {metrics['PSNR']:.2f} dB\n"
+            f"SSIM: {metrics['SSIM']:.4f}\n"
+            f"SNR: {metrics['SNR']:.2f} dB\n\n"
+            f"Removed Frequencies: {len(self.selected_frequencies)}\n"
+            f"Notch Radius: {int(self.slider_radius.val)}\n"
+            f"Filter Order: {int(self.slider_order.val)}"
+        )
+        
+        self.ax_metrics.text(0.1, 0.5, metrics_text, fontsize=10,
+                            verticalalignment='center', family='monospace')
+        self.ax_metrics.set_title('Performance Metrics', fontweight='bold')
+        self.ax_metrics.axis('off')
+        
+        # پروفایل افقی (وسط تصویر)
+        mid_row = self.rows // 2
+        self.ax_profile_original.plot(self.image[mid_row, :], 'b-', 
+                                     label='Original', linewidth=1.5)
+        self.ax_profile_original.plot(filtered_img[mid_row, :], 'r-', 
+                                     label='Filtered', linewidth=1.5, alpha=0.7)
+        self.ax_profile_original.set_title('Horizontal Profile (Middle Row)', 
+                                          fontweight='bold')
+        self.ax_profile_original.set_xlabel('Column')
+        self.ax_profile_original.set_ylabel('Intensity')
+        self.ax_profile_original.legend()
+        self.ax_profile_original.grid(True, alpha=0.3)
+        
+        # پروفایل عمودی (وسط تصویر)
+        mid_col = self.cols // 2
+        self.ax_profile_filtered.plot(self.image[:, mid_col], 'b-', 
+                                     label='Original', linewidth=1.5)
+        self.ax_profile_filtered.plot(filtered_img[:, mid_col], 'r-', 
+                                     label='Filtered', linewidth=1.5, alpha=0.7)
+        self.ax_profile_filtered.set_title('Vertical Profile (Middle Column)', 
+                                          fontweight='bold')
+        self.ax_profile_filtered.set_xlabel('Row')
+        self.ax_profile_filtered.set_ylabel('Intensity')
+        self.ax_profile_filtered.legend()
+        self.ax_profile_filtered.grid(True, alpha=0.3)
+        
+        self.fig.canvas.draw_idle()
+    
+    def save_results(self, event):
+        """ذخیره نتایج"""
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f'periodic_noise_removal_{timestamp}.png'
+        self.fig.savefig(filename, dpi=150, bbox_inches='tight')
+        print(f"✓ Results saved: {filename}")
+
+# تابع کمکی برای ساخت تصویر تست با نویز تکراری
+def create_test_image_with_periodic_noise():
+    """ساخت تصویر تست با نویز تکراری"""
+    # تصویر پایه
+    img = cv2.imread('lena.png', cv2.IMREAD_GRAYSCALE)
+    
+    if img is None:
+        # اگر تصویر نبود، یک تصویر ساده بساز
+        img = np.random.randint(100, 200, (512, 512), dtype=np.uint8)
+        
+        # اضافه کردن ساختار
+        for i in range(5):
+            center = (np.random.randint(100, 412), np.random.randint(100, 412))
+            radius = np.random.randint(30, 80)
+            cv2.circle(img, center, radius, 150, -1)
+    
+    # تغییر اندازه به 512x512
+    img = cv2.resize(img, (512, 512))
+    
+    # اضافه کردن نویز تکراری (الگوی سینوسی)
+    rows, cols = img.shape
+    x = np.arange(cols)
+    y = np.arange(rows)
+    X, Y = np.meshgrid(x, y)
+    
+    # الگوی تکراری ۱ (فرکانس بالا - افقی)
+    pattern1 = 30 * np.sin(2 * np.pi * X / 20)
+    
+    # الگوی تکراری ۲ (فرکانس متوسط - عمودی)
+    pattern2 = 25 * np.sin(2 * np.pi * Y / 30)
+    
+    # الگوی تکراری ۳ (فرکانس پایین - مورب)
+    pattern3 = 20 * np.sin(2 * np.pi * (X + Y) / 50)
+    
+    # ترکیب
+    noisy_img = img.astype(float) + pattern1 + pattern2 + pattern3
+    noisy_img = np.clip(noisy_img, 0, 255).astype(np.uint8)
+    
+    # ذخیره
+    cv2.imwrite('test_periodic_noise.jpg', noisy_img)
+    print("✓ Test image with periodic noise created: test_periodic_noise.jpg")
+    
+    return 'test_periodic_noise.jpg'
+
+if __name__ == "__main__":
+    # ساخت تصویر تست
+    test_image = create_test_image_with_periodic_noise()
+    
+    # اجرای سیستم
+    print(" Instructions:")
+    print("   1. Click 'Auto Detect & Remove' for automatic removal")
+    print("   2. Or click 'Manual Select' and click on frequencies in spectrum")
+    print("   3. Adjust Notch Radius and Filter Order as needed")
+    print("   4. Click 'Apply' after manual selection")
+    print("   5. Click 'Save Results' to save the output\n")
+    
+    system = PeriodicNoiseRemover(test_image)
