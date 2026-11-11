@@ -1,0 +1,143 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+from skimage import data, filters, exposure, morphology
+from skimage.util import random_noise
+from skimage.morphology import disk, opening, closing, skeletonize, white_tophat
+from skimage.draw import disk as draw_disk, rectangle
+
+# 2-1) noise 
+
+binary_image = np.zeros((160, 160), dtype=bool)
+
+rr, cc = draw_disk((60, 60), 30, shape=binary_image.shape)
+binary_image[rr, cc] = True
+
+rr, cc = draw_disk((95, 95), 28, shape=binary_image.shape)
+binary_image[rr, cc] = True
+
+rr, cc = rectangle(start=(35, 105), end=(95, 140), shape=binary_image.shape)
+binary_image[rr, cc] = True
+
+noisy_image = random_noise(binary_image, mode="s&p", amount=0.05)
+noisy_image = noisy_image > 0.5
+
+binary_structuring_element = np.ones((3, 3), dtype=bool)
+
+opened_image = opening(noisy_image, binary_structuring_element)
+cleaned_image = closing(opened_image, binary_structuring_element)
+
+plt.figure(figsize=(14, 4))
+
+plt.subplot(1, 4, 1)
+plt.imshow(binary_image, cmap="gray")
+plt.title("Original Binary Image")
+plt.axis("off")
+
+plt.subplot(1, 4, 2)
+plt.imshow(noisy_image, cmap="gray")
+plt.title("Salt and Pepper Noise 5%")
+plt.axis("off")
+
+plt.subplot(1, 4, 3)
+plt.imshow(opened_image, cmap="gray")
+plt.title("After Opening")
+plt.axis("off")
+
+plt.subplot(1, 4, 4)
+plt.imshow(cleaned_image, cmap="gray")
+plt.title("After Opening and Closing")
+plt.axis("off")
+
+plt.tight_layout()
+plt.show()
+# 2-2) Skelet
+
+skeleton_image = skeletonize(cleaned_image)
+
+original_white_pixels = np.sum(cleaned_image)
+skeleton_pixels = np.sum(skeleton_image)
+
+if original_white_pixels == 0:
+    skeleton_ratio = 0
+else:
+    skeleton_ratio = skeleton_pixels / original_white_pixels
+
+print("----- Skeletonization Result -----")
+print("White pixels in cleaned binary image:", original_white_pixels)
+print("Skeleton pixels:", skeleton_pixels)
+print("Skeleton to original ratio:", skeleton_ratio)
+
+plt.figure(figsize=(8, 4))
+
+plt.subplot(1, 2, 1)
+plt.imshow(cleaned_image, cmap="gray")
+plt.title("Cleaned Binary Image")
+plt.axis("off")
+
+plt.subplot(1, 2, 2)
+plt.imshow(skeleton_image, cmap="gray")
+plt.title("Skeleton Image")
+plt.axis("off")
+
+plt.tight_layout()
+plt.show()
+# 2-3)gradient and 
+
+medical_image = data.cell()
+medical_image = medical_image.astype(float)
+medical_image = exposure.rescale_intensity(medical_image, out_range=(0, 1))
+
+gray_structuring_element = disk(4)
+
+dilated_image = morphology.dilation(medical_image, gray_structuring_element)
+eroded_image = morphology.erosion(medical_image, gray_structuring_element)
+
+morphological_gradient = dilated_image - eroded_image
+sobel_edges = filters.sobel(medical_image)
+
+plt.figure(figsize=(14, 4))
+
+plt.subplot(1, 3, 1)
+plt.imshow(medical_image, cmap="gray")
+plt.title("Medical Grayscale Image")
+plt.axis("off")
+
+plt.subplot(1, 3, 2)
+plt.imshow(morphological_gradient, cmap="gray")
+plt.title("Morphological Gradient")
+plt.axis("off")
+
+plt.subplot(1, 3, 3)
+plt.imshow(sobel_edges, cmap="gray")
+plt.title("Sobel Edge Detection")
+plt.axis("off")
+
+plt.tight_layout()
+plt.show()
+# 2-4) White Top-Hat
+
+white_tophat_image = white_tophat(medical_image, gray_structuring_element)
+
+threshold_value = filters.threshold_otsu(white_tophat_image)
+thresholded_tophat = white_tophat_image > threshold_value
+
+plt.figure(figsize=(14, 4))
+
+plt.subplot(1, 3, 1)
+plt.imshow(medical_image, cmap="gray")
+plt.title("Original Medical Image")
+plt.axis("off")
+
+plt.subplot(1, 3, 2)
+plt.imshow(white_tophat_image, cmap="gray")
+plt.title("White Top-Hat Result")
+plt.axis("off")
+
+plt.subplot(1, 3, 3)
+plt.imshow(thresholded_tophat, cmap="gray")
+plt.title("Thresholded White Top-Hat")
+plt.axis("off")
+
+plt.tight_layout()
+plt.show()
